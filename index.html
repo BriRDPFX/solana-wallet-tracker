@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Solana Wallet Tracker</title>
+  <style>
+    body { background:#000; color:#fff; font-family:sans-serif; margin:0; }
+    header { padding:20px; background:#111; text-align:center; font-size:24px; }
+    nav { display:flex; justify-content:center; gap:10px; background:#111; padding:10px; }
+    nav button { padding:10px 20px; background:#222; color:#fff; border:none; cursor:pointer; }
+    nav button:hover { background:#444; }
+    .content { display:none; padding:20px; }
+    .content.active { display:block; }
+    .profile-card { border:1px solid #444; padding:10px; margin-bottom:10px; background:#111; display:flex; align-items:center; }
+    .profile-card img { width:40px; height:40px; margin-right:10px; border-radius:20px; }
+    .event { padding:10px; border-bottom:1px solid #333; }
+    .event-type { font-weight:bold; color:#0f0; margin-right:10px; }
+    .label { color:#999; margin-right:4px; }
+    .copy-btn { cursor:pointer; margin-left:5px; }
+    .addr { color:#0ff; margin-left:5px; }
+    input[type="text"] { width: 60%; padding: 6px; }
+    svg text { pointer-events: none; }
+  </style>
+</head>
+<body>
+  <header>🔍 Solana Wallet Tracker</header>
+  <div style="padding:10px;background:#111;">
+    <input type="text" id="walletInput" placeholder="Paste a wallet address..." />
+    <button onclick="addManualWallet()">➕ Add Wallet</button>
+  </div>
+  <nav>
+    <button onclick="showTab('profiles')">Profiles</button>
+    <button onclick="showTab('events')">Events</button>
+    <button onclick="showTab('nodes')">Nodes</button>
+  </nav>
+  <div class="content" id="profiles"></div>
+  <div class="content" id="events">
+    <div>
+      <label><input type="checkbox" id="filterSWP" checked> SWP</label>
+      <label><input type="checkbox" id="filterTRF" checked> TRF</label>
+      <label><input type="checkbox" id="filterMNT" checked> MNT</label>
+      <label><input type="checkbox" id="filterLQT" checked> LQT</label>
+      <label><input type="checkbox" id="globalVolume" checked> 🔊 Sound</label>
+    </div>
+    <div id="eventsList"></div>
+  </div>
+  <div class="content" id="nodes">
+    <svg id="nodesSvg" width="100%" height="600" style="background:#111;"></svg>
+  </div>
+
+  <script>
+    // ✅ Your exchange wallets (auto filtered from profile logic)
+    const exchangeWallets = [
+      "5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9",
+      "ASTyfSima4LLAdDgoFGkgqoKowG1LZFDr9fAQrg7iaJZ",
+      "AC5RDfQFmDS1deWZos921JfqscXdByf8BKHs5ACWjtW2",
+      "6FEVkH17P9y8Q9aCkDdPcMDjvj7SVxrTETaYEm8f51Jy",
+      "BmFdpraQhkiDQE6SnfG5omcA1VwzqfXrwtNYBwWTymy6",
+      "5ndLnEYqSFiA5yUFHo6LVZ1eWc6Rhh11K5CfJNkoHEPs",
+      "H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS",
+      "2AQdpHJ2JpcEgPiATUXjQxA8QmafFegfQwSLWSprPicm"
+    ];
+    const walletToProfile = {};
+    const profileMap = {};
+
+    function showTab(tabId) {
+      document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      if (tabId === "nodes") loadNodes();
+      if (tabId === "profiles") loadProfiles();
+    }
+
+    function loadProfiles() {
+      const container = document.getElementById("profiles");
+      container.innerHTML = '';
+      Object.entries(profileMap).forEach(([id, wallets]) => {
+        const data = JSON.parse(localStorage.getItem(id) || '{}');
+        const card = document.createElement("div");
+        card.className = "profile-card";
+        card.innerHTML = `<img src="${data.image || ''}" />
+          <div><strong>${data.name || id}</strong><br>${wallets.join(", ")}</div>`;
+        container.appendChild(card);
+      });
+    }
+
+    function createProfileIfNeeded(walletA, walletB) {
+      const profileId = walletToProfile[walletA] || walletToProfile[walletB] || ("profile_" + Date.now());
+      if (!profileMap[profileId]) profileMap[profileId] = [];
+      [walletA, walletB].forEach(w => {
+        if (!profileMap[profileId].includes(w)) {
+          profileMap[profileId].push(w);
+          walletToProfile[w] = profileId;
+        }
+      });
+      const realWallets = profileMap[profileId].filter(w => !exchangeWallets.includes(w));
+      if (realWallets.length >= 2) {
+        profileMap[profileId] = realWallets;
+        exchangeWallets.forEach(w => delete walletToProfile[w]);
+      }
+    }
+
+    function classifyTx(tx) {
+      const d = tx.description || {};
+      if (d.type === "SWAP") return "SWP";
+      if (d.type === "TRANSFER") return "TRF";
+      if (d.type === "MINT") return "MNT";
+      if (d.type === "ADD_LIQUIDITY") return "LQT";
+      return "TRF";
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text);
+    }
+
+    function displayTx(tx) {
+      const type = classifyTx(tx);
+      const from = tx.description?.sender || "unknown";
+      const to = tx.description?.receiver || "unknown";
+      const token = tx.description?.tokenAddress || "SOL";
+      const tokenSymbol = tx.description?.tokenSymbol || token.slice(0,4) + "..." + token.slice(-4);
+      const platform = tx.description?.source || "unknown";
+      const container = document.getElementById("eventsList");
+
+      const el = document.createElement("div");
+      el.className = "event";
+      el.innerHTML = `<span class="event-type">${type}</span>
+        <span class="addr">From:</span> ${from.slice(0,4)}...${from.slice(-4)}
+        <span class="addr">To:</span> ${to.slice(0,4)}...${to.slice(-4)}<br>
+        <span class="label">Token:</span>${tokenSymbol}
+        <span class="copy-btn" onclick="copyToClipboard('${token}')">📋</span>
+        <a href="https://dexscreener.com/solana/${token}" target="_blank">📈</a>
+        <a href="https://bullx.gg/token/${token}" target="_blank">🐂</a>
+        <a href="https://axiom.xyz/token/${token}" target="_blank">🧠</a><br>
+        <span class="label">Platform:</span>${platform}`;
+      container.prepend(el);
+    }
+
+    function fetchSolBalance(wallet, x, y) {
+      fetch(`https://api.helius.xyz/v0/addresses/${wallet}/balances?api-key=31b7bbca-47ce-459b-b976-ae3f5edf68ea`)
+        .then(res => res.json())
+        .then(data => {
+          const sol = data.nativeBalance?.lamports ? data.nativeBalance.lamports / 1e9 : 0;
+          const svg = document.getElementById("nodesSvg");
+          const old = document.getElementById("tooltip");
+          if (old) old.remove();
+          const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          group.setAttribute("id", "tooltip");
+          const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          bg.setAttribute("x", x + 30);
+          bg.setAttribute("y", y - 10);
+          bg.setAttribute("width", 120);
+          bg.setAttribute("height", 30);
+          bg.setAttribute("fill", "#000");
+          bg.setAttribute("rx", 5);
+          const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          label.setAttribute("x", x + 40);
+          label.setAttribute("y", y + 10);
+          label.setAttribute("fill", "#0f0");
+          label.setAttribute("font-size", "12");
+          label.textContent = `Balance: ${sol.toFixed(4)} SOL`;
+          group.appendChild(bg);
+          group.appendChild(label);
+          svg.appendChild(group);
+        });
+    }
+
+    function loadNodes() {
+      const svg = document.getElementById("nodesSvg");
+      svg.innerHTML = "";
+      let spacing = 200, colorIndex = 0;
+      const colors = ["#0ff", "#f0f", "#ff0", "#0f0", "#f90", "#09f", "#fff"];
+      Object.entries(profileMap).forEach(([profileId, wallets], profileNum) => {
+        const color = colors[colorIndex++ % colors.length];
+        const profileX = (profileNum % 4) * spacing + 100;
+        const profileY = Math.floor(profileNum / 4) * spacing + 100;
+        wallets.forEach((wallet, i) => {
+          const angle = (i / wallets.length) * 2 * Math.PI;
+          const radius = 60;
+          const nodeX = profileX + Math.cos(angle) * radius * 2;
+          const nodeY = profileY + Math.sin(angle) * radius * 2;
+          const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          circle.setAttribute("cx", nodeX);
+          circle.setAttribute("cy", nodeY);
+          circle.setAttribute("r", 25);
+          circle.setAttribute("fill", color);
+          circle.setAttribute("stroke", "#000");
+          circle.setAttribute("stroke-width", 2);
+          circle.style.cursor = "pointer";
+          const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+          title.textContent = wallet;
+          circle.appendChild(title);
+          circle.addEventListener("click", () => {
+            fetchSolBalance(wallet, nodeX, nodeY);
+          });
+          svg.appendChild(circle);
+          const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          text.setAttribute("x", nodeX);
+          text.setAttribute("y", nodeY + 5);
+          text.setAttribute("fill", "#000");
+          text.setAttribute("font-size", "12");
+          text.setAttribute("text-anchor", "middle");
+          text.textContent = wallet.slice(0, 4) + "..." + wallet.slice(-3);
+          svg.appendChild(text);
+        });
+      });
+    }
+
+    function addManualWallet() {
+      const input = document.getElementById("walletInput");
+      const addr = input.value.trim();
+      if (!addr || addr.length < 32) {
+        alert("Invalid wallet address.");
+        return;
+      }
+      if (walletToProfile[addr]) {
+        alert("This wallet is already being tracked.");
+        return;
+      }
+      const nickname = prompt("Enter a name or label for this wallet:");
+      const imageURL = prompt("Paste an image URL (or leave blank for default):");
+      const profileId = "manual_" + Date.now();
+      profileMap[profileId] = [addr];
+      walletToProfile[addr] = profileId;
+      const profileData = {
+        name: nickname || addr.slice(0,4) + "..." + addr.slice(-4),
+        image: imageURL || "https://upload.wikimedia.org/wikipedia/commons/8/89/Portrait_Placeholder.png",
+        muted: false
+      };
+      localStorage.setItem(profileId, JSON.stringify(profileData));
+      input.value = "";
+      loadProfiles();
+      loadNodes();
+      fetch(`https://api.helius.xyz/v0/addresses/${addr}/transactions?limit=20&api-key=31b7bbca-47ce-459b-b976-ae3f5edf68ea`)
+        .then(res => res.json())
+        .then(txs => {
+          txs.forEach(tx => {
+            const from = tx.description?.sender || "";
+            const to = tx.description?.receiver || "";
+            const type = classifyTx(tx);
+            displayTx(tx);
+            if (from && to && from !== to) {
+              createProfileIfNeeded(from, to);
+            }
+          });
+          loadProfiles();
+          loadNodes();
+        });
+    }
+
+    showTab("profiles");
+  </script>
+</body>
+</html>
